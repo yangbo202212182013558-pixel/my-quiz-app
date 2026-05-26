@@ -12,6 +12,50 @@ st.set_page_config(
 
 st.title("📝 我的专属无广告刷题库")
 
+# ================= 核心速度优化：高速缓存函数 =================
+@st.cache_data(show_spinner="⚡ 正在为您极速解析 900+ 题库，仅需一次...")
+def load_and_process_excel(file):
+    # 读取 Excel，全部作为字符串处理
+    df = pd.read_excel(file, dtype=str)
+    
+    # 清理列名的空格
+    df.columns = [str(col).strip() for col in df.columns]
+    
+    # 精准匹配表头
+    q_col = next((c for c in df.columns if "题干" in c), None)
+    ans_col = next((c for c in df.columns if "正确答案" in c or "答案" in c), None)
+    analysis_col = next((c for c in df.columns if "解析" in c), None)
+    
+    opt_cols = {}
+    for letter in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
+        col_name = next((c for c in df.columns if f"选项 {letter}" in c or f"选项{letter}" in c), None)
+        if col_name:
+            opt_cols[letter] = col_name
+
+    # 兜底识别
+    if not q_col: q_col = df.columns[0]
+    if not ans_col: ans_col = df.columns[-1]
+
+    # 一次性清洗完所有数据，存入缓存
+    cleaned_records = []
+    for _, row in df.iterrows():
+        def clean_text(val):
+            if pd.isna(val) or str(val).strip() == "" or str(val).lower() == "nan":
+                return ""
+            return html.unescape(str(val).strip())
+
+        item = {
+            "题目": clean_text(row.get(q_col, "")),
+            "答案": clean_text(row.get(ans_col, "")).upper(),
+            "解析": clean_text(row.get(analysis_col, "暂无解析")),
+        }
+        for letter, col_name in opt_cols.items():
+            item[letter] = clean_text(row.get(col_name, ""))
+        cleaned_records.append(item)
+        
+    return cleaned_records
+# =============================================================
+
 # 初始化 Session State
 if "questions" not in st.session_state:
     st.session_state.questions = []
@@ -33,43 +77,8 @@ if uploaded_file:
         st.session_state.score_submitted = False
         st.session_state.current_file_name = uploaded_file.name
 
-    # 读取 Excel
-    df = pd.read_excel(uploaded_file, dtype=str)
-    
-    # 清理列名的空格
-    df.columns = [str(col).strip() for col in df.columns]
-    
-    # --- 精准匹配表头 ---
-    q_col = next((c for c in df.columns if "题干" in c), None)
-    ans_col = next((c for c in df.columns if "正确答案" in c or "答案" in c), None)
-    analysis_col = next((c for c in df.columns if "解析" in c), None)
-    
-    opt_cols = {}
-    for letter in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
-        col_name = next((c for c in df.columns if f"选项 {letter}" in c or f"选项{letter}" in c), None)
-        if col_name:
-            opt_cols[letter] = col_name
-
-    # 兜底识别
-    if not q_col: q_col = df.columns[0]
-    if not ans_col: ans_col = df.columns[-1]
-
-    # 清洗数据
-    cleaned_records = []
-    for _, row in df.iterrows():
-        def clean_text(val):
-            if pd.isna(val) or str(val).strip() == "" or str(val).lower() == "nan":
-                return ""
-            return html.unescape(str(val).strip())
-
-        item = {
-            "题目": clean_text(row.get(q_col, "")),
-            "答案": clean_text(row.get(ans_col, "")).upper(),
-            "解析": clean_text(row.get(analysis_col, "暂无解析")),
-        }
-        for letter, col_name in opt_cols.items():
-            item[letter] = clean_text(row.get(col_name, ""))
-        cleaned_records.append(item)
+    # 【极速读取】调用带有缓存的解析函数，1秒内完成，后续点击不再重新执行此处
+    cleaned_records = load_and_process_excel(uploaded_file)
 
     # 2. 侧边栏刷题设置
     st.sidebar.header("⚙️ 刷题设置")
@@ -90,7 +99,7 @@ if uploaded_file:
         st.session_state.user_answers = {}
         st.session_state.score_submitted = False
 
-    # 抽取题目范围设置 (仅在考试模式下提供随机抽题选项，背题/挑战默认为全部或打乱)
+    # 抽取题目范围设置
     if "模拟考试" in mode:
         exam_scope = st.sidebar.selectbox("考试范围选项：", ["随机抽题测试", "全量试卷测试"])
         if exam_scope == "随机抽题测试":
@@ -135,7 +144,7 @@ if uploaded_file:
         # 显示题目题干
         st.info(f"**题目：** {q['题目']}")
         
-        # 整理选项（只展示有内容的选项，如 E、F 没填就不显示）
+        # 整理选项
         options = []
         for opt in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
             val = q.get(opt, "")
@@ -149,7 +158,6 @@ if uploaded_file:
 
         # ---------------- 模式 1：背题模式 ----------------
         if "背题模式" in mode:
-            # 渲染禁用状态的单选项，默认点亮正确答案
             correct_index = next((i for i, o in enumerate(options) if o.startswith(correct_letter)), None)
             st.radio(
                 "题目选项：", 
@@ -158,7 +166,6 @@ if uploaded_file:
                 disabled=True, 
                 key=f"read_{idx}"
             )
-            # 直接显示答案和解析
             st.success(f"🎯 **正确答案：** {correct_letter}")
             st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
 
@@ -166,7 +173,6 @@ if uploaded_file:
         elif "挑战模式" in mode:
             saved_ans = st.session_state.user_answers.get(idx, None)
             
-            # 渲染单选按钮供选择
             selected = st.radio(
                 "请选择您的答案：", 
                 options, 
@@ -178,7 +184,6 @@ if uploaded_file:
                 st.session_state.user_answers[idx] = selected
                 user_letter = selected[0]
                 
-                # 即时反馈正确答案
                 if user_letter == correct_letter:
                     st.success("✅ 恭喜您，回答正确！")
                 else:
@@ -190,7 +195,6 @@ if uploaded_file:
         elif "模拟考试" in mode:
             saved_ans = st.session_state.user_answers.get(idx, None)
             
-            # 渲染正常单选，交卷前不给出任何提示
             selected = st.radio(
                 "请选择您的答案：", 
                 options, 
@@ -216,7 +220,6 @@ if uploaded_file:
                     st.session_state.current_index += 1
                     st.rerun()
         with col3:
-            # 仅在“模拟考试”模式下显示“提交试卷”按钮
             if "模拟考试" in mode and not st.session_state.score_submitted:
                 if st.button("📝 提交试卷", type="primary", use_container_width=True):
                     st.session_state.score_submitted = True
@@ -227,7 +230,6 @@ if uploaded_file:
             st.divider()
             st.header("📊 考试报告")
             
-            # 1. 统计分数和错题
             correct_count = 0
             wrong_questions = []
             all_results = []
@@ -256,7 +258,6 @@ if uploaded_file:
                 if not is_correct:
                     wrong_questions.append(result_item)
 
-            # 2. 显示得分看板
             score = round((correct_count / len(q_list)) * 100, 1)
             st.metric(
                 label="最终得分", 
@@ -264,10 +265,8 @@ if uploaded_file:
                 delta=f"答对 {correct_count} / {len(q_list)} 题 (答错/未答 {len(wrong_questions)} 题)"
             )
             
-            # 3. 分类呈现报告（Tab 页视图，更高级清晰）
             tab1, tab2 = st.tabs(["❌ 错题本 (复习用)", "📖 完整试卷报告"])
             
-            # 错题标签页 (只显示错题，突出对比)
             with tab1:
                 if len(wrong_questions) == 0:
                     st.balloons()
@@ -284,7 +283,6 @@ if uploaded_file:
                             st.success(f"正确答案：`{w['correct_letter']}` ✅")
                             st.warning(f"💡 解析：{w['question'].get('解析', '暂无解析')}")
             
-            # 完整试卷报告页
             with tab2:
                 for r in all_results:
                     status_icon = "✅ 正确" if r['is_correct'] else "❌ 错误"
@@ -292,11 +290,10 @@ if uploaded_file:
                         st.write(f"**题目：** {r['question']['题目']}")
                         for opt in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
                             if r['question'].get(opt):
-                                st.write(f"- {opt}: {r['question'][opt]}")
+                                f"- {opt}: {r['question'][opt]}"
                         st.write(f"**您的答案：** {r['user_letter']} | **正确答案：** {r['correct_letter']}")
                         st.write(f"**解析：** {r['question'].get('解析', '暂无解析')}")
             
-            # 重新开始
             if st.button("🔄 重新开始考试", use_container_width=True):
                 st.session_state.current_index = 0
                 st.session_state.user_answers = {}
