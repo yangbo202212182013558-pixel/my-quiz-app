@@ -5,26 +5,24 @@ import html
 import requests
 import json
 
-# 设置网页标题和布局（针对手机端优化）
+# 设置网页标题和布局
 st.set_page_config(
     page_title="极速无广告刷题库",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# 强制注入手机端防卡顿、防闪烁的 CSS 样式
+# 注入手机端优化 CSS
 st.markdown("""
     <style>
-    /* 减少手机端不必要的白边和内边距 */
     .block-container {
         padding-top: 1.5rem !important;
         padding-bottom: 1rem !important;
         padding-left: 1rem !important;
         padding-right: 1rem !important;
     }
-    /* 优化手机端按钮点击态 */
-    button {
-        active-background-color: #f0f2f6 !important;
+    div[data-testid="stMarkdownContainer"] p {
+        font-size: 16px !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -61,11 +59,12 @@ def next_q():
 def save_ans_callback(idx, widget_key):
     st.session_state.user_answers[idx] = st.session_state[widget_key]
 
-def challenge_ans_callback(idx, widget_key, correct_letter):
+# 挑战模式单选/判断回调
+def challenge_single_callback(idx, widget_key, correct_letter):
     selected_val = st.session_state[widget_key]
-    st.session_state.user_answers[idx] = selected_val
     if selected_val:
         user_letter = selected_val[0]
+        st.session_state.user_answers[idx] = user_letter
         if user_letter == correct_letter:
             if st.session_state.current_index < len(st.session_state.questions) - 1:
                 st.session_state.current_index += 1
@@ -83,10 +82,7 @@ def get_ai_stream(api_key, base_url, model, prompt):
     data = {
         "model": model,
         "messages": [
-            {
-                "role": "system", 
-                "content": "你是一位拥有20年教学经验的星级金牌辅导老师，解析题目条理清晰、言简意赅。"
-            },
+            {"role": "system", "content": "你是一位拥有20年教学经验的金牌辅导老师，解析题目逻辑严密，直击考点。"},
             {"role": "user", "content": prompt}
         ],
         "stream": True
@@ -107,16 +103,16 @@ def get_ai_stream(api_key, base_url, model, prompt):
                 except Exception:
                     continue
     except Exception as e:
-        yield f"❌ AI 解析调用失败。请确认API配置或网络。错误: {str(e)}"
+        yield f"❌ AI 解析失败。错误: {str(e)}"
 
-# ================= 4. 解析 Excel 题库 (仅执行一次) =================
+# ================= 4. 智能解析并清洗题库 =================
 uploaded_file = st.file_uploader("第一步：上传你的 Excel 题库", type=["xlsx"])
 
 if uploaded_file:
     file_key = f"{uploaded_file.name}_{uploaded_file.size}"
     
     if st.session_state.current_file_key != file_key:
-        with st.spinner("⚡ 正在极速解析题库..."):
+        with st.spinner("⚡ 正在极速解析并分类智能题型..."):
             df = pd.read_excel(uploaded_file, dtype=str)
             df.columns = [str(col).strip() for col in df.columns]
             
@@ -140,13 +136,48 @@ if uploaded_file:
                         return ""
                     return html.unescape(str(val).strip())
 
+                raw_ans = clean_text(row.get(ans_col, "")).upper()
+                
+                # 1. 智能识别判断题
+                is_tf = raw_ans in ["对", "错", "正确", "错误", "T", "F", "√", "×"]
+                
+                # 2. 获取选项内容，检查是否有预设选项
+                opts = {}
+                has_options = False
+                for letter in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
+                    val = clean_text(row.get(opt_cols.get(letter, ''), ""))
+                    if val:
+                        opts[letter] = val
+                        has_options = True
+
+                # 3. 确定最终题型
+                if is_tf or not has_options:
+                    q_type = "判断题"
+                    # 规范化判断题答案：对/正确/T/√ -> A; 错/错误/F/× -> B
+                    final_ans = "A" if raw_ans in ["对", "正确", "T", "√"] else "B"
+                    if "A" not in opts or not opts["A"]:
+                        opts["A"] = "正确"
+                    if "B" not in opts or not opts["B"]:
+                        opts["B"] = "错误"
+                else:
+                    # 清洗出纯净的字母答案集合
+                    clean_letters = "".join([c for c in raw_ans if c in "ABCDEFGH"])
+                    if len(clean_letters) > 1:
+                        q_type = "多选题"
+                        final_ans = "".join(sorted(list(set(clean_letters)))) # 去重排序，如 BCA -> ABC
+                    else:
+                        q_type = "单选题"
+                        final_ans = clean_letters
+
                 item = {
+                    "题型": q_type,
                     "题目": clean_text(row.get(q_col, "")),
-                    "答案": clean_text(row.get(ans_col, "")).upper(),
+                    "答案": final_ans,
                     "解析": clean_text(row.get(analysis_col, "暂无解析")),
                 }
-                for letter, col_name in opt_cols.items():
-                    item[letter] = clean_text(row.get(col_name, ""))
+                for letter in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
+                    item[letter] = opts.get(letter, "")
+                
                 cleaned_records.append(item)
             
             st.session_state.raw_questions = cleaned_records
@@ -157,7 +188,7 @@ if uploaded_file:
             st.session_state.score_submitted = False
             st.session_state.ai_explanations = {}
 
-    # ================= 5. 侧边栏刷题设置及 AI 配置 =================
+    # ================= 5. 侧边栏刷题设置 =================
     st.sidebar.header("⚙️ 刷题设置")
     
     mode = st.sidebar.radio(
@@ -192,9 +223,8 @@ if uploaded_file:
     api_key = ""
     base_url = ""
     model_name = ""
-    
     if enable_ai:
-        api_key = st.sidebar.text_input("AI API Key (密钥)：", type="password")
+        api_key = st.sidebar.text_input("AI API Key：", type="password")
         base_url = st.sidebar.text_input("中转站 API Base URL：", value="https://api.openai.com/v1")
         model_name = st.sidebar.text_input("模型名称 (Model)：", value="gpt-4o-mini")
 
@@ -217,84 +247,147 @@ if uploaded_file:
             
         st.sidebar.success(f"已成功加载 {len(st.session_state.questions)} 道题！")
 
-    # ================= 6. 📱 手机端终极武器：核心局部渲染碎片 =================
-    # 这一块被 @st.fragment 装饰后，点击切题、选项，整个侧边栏和上传组件都不会刷新，提速10倍！
+    # ================= 6. 📱 局部渲染答题区 =================
     @st.fragment
     def render_quiz_area():
         q_list = st.session_state.questions
         idx = st.session_state.current_index
         q = q_list[idx]
+        q_type = q.get("题型", "单选题")
         
         # 进度条
         progress = (idx + 1) / len(q_list)
         st.progress(progress)
+        
+        # 题型徽章展示
+        badge_color = "#1E90FF" if q_type == "单选题" else ("#FF4500" if q_type == "多选题" else "#32CD32")
+        st.markdown(f"<span style='background-color:{badge_color}; color:white; padding:3px 8px; border-radius:5px; font-size:12px; font-weight:bold;'>{q_type}</span>", unsafe_allow_html=True)
         st.subheader(f"进度: {idx + 1} / {len(q_list)}")
         
         # 题干
         st.info(f"**题目：** {q['题目']}")
         
-        # 选项
+        # 整理选项
         options = []
         for opt in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
             val = q.get(opt, "")
             if val:
                 options.append(f"{opt}. {val}")
         
-        correct_letter = str(q.get('答案', '')).strip().upper()
-        if correct_letter.endswith(".0"):
-            correct_letter = correct_letter[0]
-
+        correct_ans = str(q.get('答案', '')).strip().upper()
         show_ai_button = False  
 
-        # 1. 背题模式
+        # ------------------ 📖 1. 背题模式 ------------------
         if "背题模式" in mode:
-            correct_index = next((i for i, o in enumerate(options) if o.startswith(correct_letter)), None)
-            st.radio("题目选项：", options, index=correct_index, disabled=True, key=f"read_{idx}")
-            st.success(f"🎯 **正确答案：** {correct_letter}")
+            if q_type == "多选题":
+                # 展示所有选项，并禁用，正确选项默认打勾
+                for opt in options:
+                    letter = opt[0]
+                    st.checkbox(opt, value=(letter in correct_ans), disabled=True, key=f"read_{idx}_{letter}")
+            else:
+                # 单选/判断
+                correct_index = next((i for i, o in enumerate(options) if o.startswith(correct_ans)), None)
+                st.radio("选项：", options, index=correct_index, disabled=True, key=f"read_{idx}")
+            
+            st.success(f"🎯 **正确答案：** {correct_ans}")
             st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
             show_ai_button = True  
 
-        # 2. 挑战模式
+        # ------------------ 🔥 2. 挑战模式 (核心重构) ------------------
         elif "挑战模式" in mode:
-            saved_ans = st.session_state.user_answers.get(idx, None)
-            widget_key = f"challenge_{idx}"
+            saved_ans = st.session_state.user_answers.get(idx, "")
             
-            selected = st.radio(
-                "请选择您的答案：", 
-                options, 
-                index=options.index(saved_ans) if saved_ans in options else None, 
-                key=widget_key,
-                on_change=challenge_ans_callback,
-                args=(idx, widget_key, correct_letter)
-            )
+            if q_type == "多选题":
+                is_confirmed = st.session_state.get(f"confirmed_{idx}", False)
+                
+                # 渲染复选框
+                selected_letters = []
+                for opt in options:
+                    letter = opt[0]
+                    # 如果已确认，则禁用复选框防止修改
+                    chk = st.checkbox(opt, value=(letter in saved_ans), disabled=is_confirmed, key=f"challenge_{idx}_{letter}")
+                    if chk:
+                        selected_letters.append(letter)
+                
+                user_ans_str = "".join(sorted(selected_letters))
+                
+                if not is_confirmed:
+                    # 提供确认答案按钮
+                    if st.button("确认选择", type="primary", use_container_width=True, key=f"confirm_btn_{idx}"):
+                        if not user_ans_str:
+                            st.warning("⚠️ 请至少选择一个选项！")
+                        else:
+                            st.session_state.user_answers[idx] = user_ans_str
+                            st.session_state[f"confirmed_{idx}"] = True
+                            
+                            # 答对直接切下一题，答错留在原地渲染结果
+                            if user_ans_str == correct_ans:
+                                if st.session_state.current_index < len(q_list) - 1:
+                                    st.session_state.current_index += 1
+                                else:
+                                    st.balloons()
+                            st.rerun()
+                else:
+                    # 已点击确认后的展示状态
+                    if saved_ans == correct_ans:
+                        st.success("✅ 回答正确！")
+                        if idx == len(q_list) - 1:
+                            st.balloons()
+                            st.success("🎉 恭喜您通关本套题库！")
+                    else:
+                        st.error(f"❌ 回答错误！您的选择：{saved_ans}，正确答案是：{correct_ans}")
+                        st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
+                        show_ai_button = True
             
-            if selected:
-                user_letter = selected[0]
-                if user_letter != correct_letter:
-                    st.error(f"❌ 回答错误！您选择了 {user_letter}，正确答案是：{correct_letter}")
-                    st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
-                    show_ai_button = True  
-                elif idx == len(q_list) - 1:
-                    st.balloons()
-                    st.success("🎉 恭喜您通关本套题库！")
-                    st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
-                    show_ai_button = True
+            else:
+                # 单选 / 判断题
+                widget_key = f"challenge_single_{idx}"
+                selected = st.radio(
+                    "请选择您的答案：", 
+                    options, 
+                    index=options.index(f"{saved_ans}. {q.get(saved_ans, '')}") if saved_ans and f"{saved_ans}. {q.get(saved_ans, '')}" in options else None, 
+                    key=widget_key,
+                    on_change=challenge_single_callback,
+                    args=(idx, widget_key, correct_ans)
+                )
+                
+                if selected:
+                    user_letter = selected[0]
+                    if user_letter != correct_ans:
+                        st.error(f"❌ 回答错误！您选择了 {user_letter}，正确答案是：{correct_ans}")
+                        st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
+                        show_ai_button = True
+                    elif idx == len(q_list) - 1:
+                        st.balloons()
+                        st.success("🎉 恭喜您通关本套题库！")
 
-        # 3. 模拟考试
+        # ------------------ 📝 3. 模拟考试 ------------------
         elif "模拟考试" in mode:
-            saved_ans = st.session_state.user_answers.get(idx, None)
-            widget_key = f"exam_{idx}"
+            saved_ans = st.session_state.user_answers.get(idx, "")
             
-            st.radio(
-                "请选择您的答案：", 
-                options, 
-                index=options.index(saved_ans) if saved_ans in options else None, 
-                key=widget_key,
-                on_change=save_ans_callback,
-                args=(idx, widget_key)
-            )
+            if q_type == "多选题":
+                selected_letters = []
+                for opt in options:
+                    letter = opt[0]
+                    chk = st.checkbox(opt, value=(letter in saved_ans), key=f"exam_multi_{idx}_{letter}")
+                    if chk:
+                        selected_letters.append(letter)
+                # 即时保存多选题答案
+                user_ans_str = "".join(sorted(selected_letters))
+                st.session_state.user_answers[idx] = user_ans_str
+            else:
+                # 单选 / 判断
+                widget_key = f"exam_single_{idx}"
+                selected = st.radio(
+                    "请选择您的答案：", 
+                    options, 
+                    index=options.index(f"{saved_ans}. {q.get(saved_ans, '')}") if saved_ans and f"{saved_ans}. {q.get(saved_ans, '')}" in options else None, 
+                    key=widget_key,
+                    on_change=save_ans_callback,
+                    args=(idx, widget_key)
+                )
 
-        # 🤖 AI 解析模块
+        # 🤖 AI 智能解析块
         if enable_ai and show_ai_button:
             st.write("---")
             if idx not in st.session_state.ai_explanations:
@@ -304,9 +397,10 @@ if uploaded_file:
                     else:
                         prompt = f"""
                         请深度解析以下选择题：
+                        【题型】 {q_type}
                         【题目】 {q['题目']}
                         【选项】 {"/".join(options)}
-                        【正确答案】 {correct_letter}
+                        【正确答案】 {correct_ans}
                         【官方简析】 {q.get('解析', '无')}
                         请帮我拆解：1.核心考点 2.正确项剖析 3.错项分析 4.秒记绝招。
                         """
@@ -336,7 +430,7 @@ if uploaded_file:
 
         st.write("") 
 
-        # 底部翻页按键（轻量化事件触发）
+        # 底部导航按钮
         col1, col2, col3 = st.columns(3)
         with col1:
             st.button("⬅️ 上一题", on_click=prev_q, disabled=(idx == 0), use_container_width=True)
@@ -346,11 +440,11 @@ if uploaded_file:
             if "模拟考试" in mode and not st.session_state.score_submitted:
                 st.button("📝 提交试卷", on_click=submit_exam_callback, type="primary", use_container_width=True)
 
-    # 运行答题区组件
+    # 运行局部渲染区域
     if st.session_state.questions:
         render_quiz_area()
 
-        # ================= 7. 模拟考试结算 (不在局部组件里，交卷后渲染) =================
+        # ================= 7. 模拟考试结算 =================
         if "模拟考试" in mode and st.session_state.score_submitted:
             st.divider()
             st.header("📊 考试报告")
@@ -361,14 +455,12 @@ if uploaded_file:
             q_list = st.session_state.questions
             
             for i, question in enumerate(q_list):
-                user_ans = st.session_state.user_answers.get(i, "未作答")
-                user_letter = user_ans[0] if user_ans != "未作答" else "无"
+                user_ans = st.session_state.user_answers.get(i, "")
+                user_letter = user_ans if user_ans else "未作答"
                 
-                c_letter = str(question.get('答案', '')).strip().upper()
-                if c_letter.endswith(".0"):
-                    c_letter = c_letter[0]
+                c_ans = str(question.get('答案', '')).strip().upper()
                 
-                is_correct = (user_letter == c_letter)
+                is_correct = (user_letter == c_ans)
                 if is_correct:
                     correct_count += 1
                 
@@ -376,7 +468,7 @@ if uploaded_file:
                     "index": i + 1,
                     "question": question,
                     "user_letter": user_letter,
-                    "correct_letter": c_letter,
+                    "correct_letter": c_ans,
                     "is_correct": is_correct
                 }
                 all_results.append(result_item)
@@ -401,21 +493,13 @@ if uploaded_file:
                     total_wrongs = len(wrong_questions)
                     num_wrong_pages = (total_wrongs - 1) // items_per_page + 1
                     
-                    if num_wrong_pages > 1:
-                        w_page = st.selectbox(
-                            "错题页码：", 
-                            range(1, num_wrong_pages + 1), 
-                            format_func=lambda x: f"第 {x} 页"
-                        )
-                    else:
-                        w_page = 1
-                    
+                    w_page = st.selectbox("错题页码：", range(1, num_wrong_pages + 1)) if num_wrong_pages > 1 else 1
                     start_w = (w_page - 1) * items_per_page
                     end_w = start_w + items_per_page
                     
                     for w in wrong_questions[start_w:end_w]:
                         with st.expander(f"🔴 第 {w['index']} 题 ( 选: {w['user_letter']} | 答: {w['correct_letter']} )"):
-                            st.write(f"**题目：** {w['question']['题目']}")
+                            st.write(f"**【{w['question']['题型']}】** {w['question']['题目']}")
                             for opt in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
                                 if w['question'].get(opt):
                                     st.write(f"- {opt}: {w['question'][opt]}")
@@ -427,25 +511,18 @@ if uploaded_file:
                 total_all = len(all_results)
                 num_all_pages = (total_all - 1) // items_per_page + 1
                 
-                if num_all_pages > 1:
-                    a_page = st.selectbox(
-                        "报告页码：", 
-                        range(1, num_all_pages + 1), 
-                        format_func=lambda x: f"第 {x} 页"
-                    )
-                else:
-                    a_page = 1
-                
+                a_page = st.selectbox("报告页码：", range(1, num_all_pages + 1)) if num_all_pages > 1 else 1
                 start_a = (a_page - 1) * items_per_page
                 end_a = start_a + items_per_page
                 
                 for r in all_results[start_a:end_a]:
                     status_icon = "✅ 正确" if r['is_correct'] else "❌ 错误"
                     with st.expander(f"第 {r['index']} 题：{status_icon} (选: {r['user_letter']} | 答: {r['correct_letter']})"):
-                        st.write(f"**题目：** {r['question']['题目']}")
+                        st.write(f"**【{r['question']['题型']}】** {r['question']['题目']}")
                         for opt in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
                             if r['question'].get(opt):
-                                st.write(f"- {opt}: {r['question'][opt]}")
+                                if r['question'][opt]:
+                                    st.write(f"- {opt}: {r['question'][opt]}")
                         st.write(f"**您的答案：** {r['user_letter']} | **正确答案：** {r['correct_letter']}")
                         st.write(f"**解析：** {r['question'].get('解析', '暂无解析')}")
             
@@ -454,5 +531,9 @@ if uploaded_file:
                 st.session_state.user_answers = {}
                 st.session_state.score_submitted = False
                 st.session_state.ai_explanations = {}
+                # 重置多选题状态
+                for k in list(st.session_state.keys()):
+                    if k.startswith("confirmed_") or k.startswith("challenge_") or k.startswith("exam_multi_"):
+                        del st.session_state[k]
                 
             st.button("🔄 重新开始考试", on_click=restart_exam, use_container_width=True)
