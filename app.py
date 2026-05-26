@@ -39,21 +39,31 @@ def next_q():
     if st.session_state.current_index < len(st.session_state.questions) - 1:
         st.session_state.current_index += 1
 
-# 选中选项时即时存入内存，零延迟
+# 模拟考试模式答案存入内存
 def save_ans_callback(idx, widget_key):
     st.session_state.user_answers[idx] = st.session_state[widget_key]
+
+# 【核心重构】挑战模式专属高能回调（答对直接切下一题）
+def challenge_ans_callback(idx, widget_key, correct_letter):
+    selected_val = st.session_state[widget_key]
+    st.session_state.user_answers[idx] = selected_val
+    if selected_val:
+        user_letter = selected_val[0]
+        # 如果答对了，直接将题目指针移向下一题
+        if user_letter == correct_letter:
+            if st.session_state.current_index < len(st.session_state.questions) - 1:
+                st.session_state.current_index += 1
 
 # 提交试卷
 def submit_exam_callback():
     st.session_state.score_submitted = True
 
-# ================= 3. 读取并解析 Excel (仅在上传新文件时运行一次) =================
+# ================= 3. 读取并解析 Excel =================
 uploaded_file = st.file_uploader("第一步：上传你的 Excel 题库", type=["xlsx"])
 
 if uploaded_file:
     file_key = f"{uploaded_file.name}_{uploaded_file.size}"
     
-    # 只有当上传了新文件时，才进行解析，避免每次点击都重复读取
     if st.session_state.current_file_key != file_key:
         with st.spinner("⚡ 正在为您极速加载并解析题库，仅需一次..."):
             df = pd.read_excel(uploaded_file, dtype=str)
@@ -89,7 +99,6 @@ if uploaded_file:
                     item[letter] = clean_text(row.get(col_name, ""))
                 cleaned_records.append(item)
             
-            # 存入极速内存
             st.session_state.raw_questions = cleaned_records
             st.session_state.current_file_key = file_key
             st.session_state.questions = []
@@ -107,7 +116,6 @@ if uploaded_file:
          "📝 3. 模拟考试 (统一交卷评测分)"]
     )
     
-    # 切换模式时自动重置状态
     if st.session_state.current_mode != mode:
         st.session_state.current_mode = mode
         st.session_state.questions = []
@@ -115,7 +123,6 @@ if uploaded_file:
         st.session_state.user_answers = {}
         st.session_state.score_submitted = False
 
-    # 参数配置
     if "模拟考试" in mode:
         exam_scope = st.sidebar.selectbox("考试范围选项：", ["随机抽题测试", "全量试卷测试"])
         if exam_scope == "随机抽题测试":
@@ -126,7 +133,6 @@ if uploaded_file:
         num_questions = len(st.session_state.raw_questions)
         order_opt = st.sidebar.selectbox("题目顺序：", ["顺序刷题", "打乱顺序"])
 
-    # 开始/重置刷题（纯内存操作，极速响应）
     if st.sidebar.button("🎯 确认/开始重置") or not st.session_state.questions:
         st.session_state.current_index = 0
         st.session_state.user_answers = {}
@@ -183,7 +189,7 @@ if uploaded_file:
             st.success(f"🎯 **正确答案：** {correct_letter}")
             st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
 
-        # ---------------- 模式 2：挑战模式 (即时反馈) ----------------
+        # ---------------- 模式 2：挑战模式 (核心逻辑修改) ----------------
         elif "挑战模式" in mode:
             saved_ans = st.session_state.user_answers.get(idx, None)
             widget_key = f"challenge_{idx}"
@@ -193,17 +199,21 @@ if uploaded_file:
                 options, 
                 index=options.index(saved_ans) if saved_ans in options else None, 
                 key=widget_key,
-                on_change=save_ans_callback,
-                args=(idx, widget_key)
+                on_change=challenge_ans_callback,
+                args=(idx, widget_key, correct_letter)
             )
             
             if selected:
                 user_letter = selected[0]
-                if user_letter == correct_letter:
-                    st.success("✅ 恭喜您，回答正确！")
-                else:
+                # 情况 A：如果答错了，停在原地，直接给出正确答案和解析
+                if user_letter != correct_letter:
                     st.error(f"❌ 回答错误！您选择了 {user_letter}，正确答案是：{correct_letter}")
-                st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
+                    st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
+                # 情况 B：如果是最后一题且答对了，显示通关喜报
+                elif idx == len(q_list) - 1:
+                    st.balloons()
+                    st.success("🎉 恭喜您答对最后一题！本套题库挑战圆满成功！")
+                    st.warning(f"💡 **解析：** {q.get('解析', '暂无解析')}")
 
         # ---------------- 模式 3：模拟考试 ----------------
         elif "模拟考试" in mode:
@@ -221,7 +231,7 @@ if uploaded_file:
 
         st.write("") 
 
-        # 底部导航按钮（绑定 Callback，实现零延迟翻页）
+        # 底部导航按钮
         col1, col2, col3 = st.columns(3)
         with col1:
             st.button("⬅️ 上一题", on_click=prev_q, disabled=(idx == 0), use_container_width=True)
@@ -231,12 +241,11 @@ if uploaded_file:
             if "模拟考试" in mode and not st.session_state.score_submitted:
                 st.button("📝 提交试卷", on_click=submit_exam_callback, type="primary", use_container_width=True)
 
-        # ---------------- 6. 模拟考试结算（智能分页技术，防卡顿） ----------------
+        # ---------------- 6. 模拟考试结算 ----------------
         if "模拟考试" in mode and st.session_state.score_submitted:
             st.divider()
             st.header("📊 考试报告")
             
-            # 计算得分
             correct_count = 0
             wrong_questions = []
             all_results = []
@@ -271,12 +280,9 @@ if uploaded_file:
                 delta=f"答对 {correct_count} / {len(q_list)} 题 (答错/未答 {len(wrong_questions)} 题)"
             )
             
-            # 分页器配置（每页展示 20 道题，防止 DOM 过载卡死浏览器）
             items_per_page = 20
-            
             tab1, tab2 = st.tabs(["❌ 错题本 (复习用)", "📖 完整试卷报告"])
             
-            # 错题本标签页（带分页）
             with tab1:
                 if len(wrong_questions) == 0:
                     st.balloons()
@@ -307,7 +313,6 @@ if uploaded_file:
                             st.success(f"正确答案：`{w['correct_letter']}` ✅")
                             st.warning(f"💡 解析：{w['question'].get('解析', '暂无解析')}")
             
-            # 完整试卷报告页（带分页）
             with tab2:
                 total_all = len(all_results)
                 num_all_pages = (total_all - 1) // items_per_page + 1
@@ -334,7 +339,6 @@ if uploaded_file:
                         st.write(f"**您的答案：** {r['user_letter']} | **正确答案：** {r['correct_letter']}")
                         st.write(f"**解析：** {r['question'].get('解析', '暂无解析')}")
             
-            # 重置考试按钮
             def restart_exam():
                 st.session_state.current_index = 0
                 st.session_state.user_answers = {}
