@@ -38,23 +38,50 @@ if uploaded_file:
     df.columns = [str(col).strip() for col in df.columns]
     cols = list(df.columns)
     
-    # 智能匹配列名
-    q_col = next((c for c in cols if c in ["题目", "题干", "问题", "question", "q"] or "题目" in c or "题干" in c), None)
-    a_col = next((c for c in cols if c.upper() == "A" or "选项A" in c or "选项a" in c), None)
-    b_col = next((c for c in cols if c.upper() == "B" or "选项B" in c or "选项b" in c), None)
-    c_col = next((c for c in cols if c.upper() == "C" or "选项C" in c or "选项c" in c), None)
-    d_col = next((c for c in cols if c.upper() == "D" or "选项D" in c or "选项d" in c), None)
-    ans_col = next((c for c in cols if c in ["答案", "正确答案", "answer", "key"] or "答案" in c), None)
-    analysis_col = next((c for c in cols if c in ["解析", "详解", "analysis", "explain"] or "解析" in c), None)
+    # --- 智能匹配算法 ---
+    
+    # 1. 寻找题目列
+    q_col = next((c for c in cols if any(k in c for k in ["题目", "题干", "问题", "question", "q", "内容"])), None)
+    if not q_col:
+        # 排除掉明显的序号、答案、解析列，剩下的第一个可能就是题目
+        possible_q = [c for c in cols if not any(k in c for k in ["序号", "ID", "id", "编号", "答案", "解析", "详解", "answer"])]
+        q_col = possible_q[0] if possible_q else cols[0]
 
-    # 兜底：如果实在找不到题目列，默认用第一列
-    if not q_col and len(cols) > 0:
-        q_col = cols[0]
-    # 兜底：如果找不到答案列，默认用最后一列
-    if not ans_col and len(cols) > 1:
-        ans_col = cols[-1]
+    # 2. 寻找答案列
+    ans_col = next((c for c in cols if any(k in c for k in ["答案", "正确答案", "answer", "key", "正确项", "等"])), None)
+    
+    # 3. 寻找解析列
+    analysis_col = next((c for c in cols if any(k in c for k in ["解析", "详解", "analysis", "explain", "说明"])), None)
 
-    # 重命名列，方便程序读取
+    # 4. 智能寻找选项列 (A, B, C, D)
+    other_cols = [c for c in cols if c not in [q_col, ans_col, analysis_col] and not any(k in c for k in ["序号", "ID", "id", "编号"])]
+    
+    a_col = next((c for c in other_cols if c.upper() == "A" or "选项A" in c or "选项a" in c or "A选项" in c or c.endswith("A") or c.startswith("A")), None)
+    b_col = next((c for c in other_cols if c.upper() == "B" or "选项B" in c or "选项b" in c or "B选项" in c or c.endswith("B") or c.startswith("B")), None)
+    c_col = next((c for c in other_cols if c.upper() == "C" or "选项C" in c or "选项c" in c or "C选项" in c or c.endswith("C") or c.startswith("C")), None)
+    d_col = next((c for c in other_cols if c.upper() == "D" or "选项D" in c or "选项d" in c or "D选项" in c or c.endswith("D") or c.startswith("D")), None)
+
+    # 【超级安全兜底机制】：如果通过名字没有找齐 A B C D，我们按顺序把剩下没被占用的列强制分配给 A, B, C, D
+    assigned = [a_col, b_col, c_col, d_col]
+    remaining_cols = [c for c in other_cols if c not in assigned]
+    
+    if not a_col and len(remaining_cols) > 0: a_col = remaining_cols.pop(0)
+    if not b_col and len(remaining_cols) > 0: b_col = remaining_cols.pop(0)
+    if not c_col and len(remaining_cols) > 0: c_col = remaining_cols.pop(0)
+    if not d_col and len(remaining_cols) > 0: d_col = remaining_cols.pop(0)
+
+    # 显示列名解析面板，帮助用户核对
+    with st.expander("🔍 题库格式解析成功！(如果选项仍不显示，点此核对表头)"):
+        st.write(f"**您的表格所有列：** `{', '.join(cols)}`")
+        st.write(f"**系统识别出的对应关系：**")
+        st.write(f"- ❓ 题目 ➡️ `{q_col}`")
+        st.write(f"- 🅰️ 选项A ➡️ `{a_col}`")
+        st.write(f"- 🅱️ 选项B ➡️ `{b_col}`")
+        st.write(f"- 🆃 选项C ➡️ `{c_col}`")
+        st.write(f"- 🅳 选项D ➡️ `{d_col}`")
+        st.write(f"- 🎯 答案 ➡️ `{ans_col if ans_col else '未检测到'}`")
+
+    # 重命名列，方便程序统一读取
     rename_dict = {}
     if q_col: rename_dict[q_col] = "题目"
     if a_col: rename_dict[a_col] = "A"
@@ -167,7 +194,6 @@ if uploaded_file:
                     correct_letter = ""
                 else:
                     correct_letter = str(raw_ans).strip().upper()
-                    # 防止单选题答案带小数点（如 A.0）
                     if correct_letter.endswith(".0"):
                         correct_letter = correct_letter[0]
                 
